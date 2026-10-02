@@ -76,7 +76,16 @@ async function handleIncomingMessage(phoneNumberId, message) {
     meta_message_id: message.id,
   });
 
-  await sendTextMessage(phoneNumberId, message.from, messages.GENERIC_WELCOME);
+  try {
+    await sendTextMessage(phoneNumberId, message.from, messages.GENERIC_WELCOME);
+  } catch (err) {
+    console.error('Error sending WhatsApp reply', {
+      shopId: shop.id,
+      httpStatus: err.httpStatus,
+      metaErrorCode: err.metaErrorCode,
+      errorMessage: err.message,
+    });
+  }
 }
 
 async function handleStatusUpdate(status) {
@@ -117,4 +126,4 @@ async function findShopByPhoneNumberId(phoneNumberId) {
   return data;
 }
 
-module.exports = { verifyWebhook, receiveWebhook };
+module.exports = { verifyWebhook, receiveWebhook, handleIncomingMessage };
