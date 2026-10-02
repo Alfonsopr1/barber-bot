@@ -137,7 +137,7 @@ Idempotencia: Meta puede reenviar el mismo evento más de una vez.
 - Fase 4 — Panel admin (ver todas las tiendas) y `add-shop` (alta de tienda nueva sin tocar código)
 - Fase 5 — Delivery y cobros (carnicerías)
 
-### Fase 0 — Base y webhook (plan propuesto, pendiente de aprobación)
+### Fase 0 — Base y webhook — ✅ cerrada (funciona de punta a punta en producción)
 
 **Objetivo**: tener el esqueleto del proyecto funcionando en Vercel, recibiendo mensajes reales de WhatsApp, identificando correctamente a qué tienda pertenece cada mensaje, y guardando todo en la base de datos — sin lógica de negocio todavía (eso es Fase 1).
 
@@ -160,6 +160,10 @@ Idempotencia: Meta puede reenviar el mismo evento más de una vez.
 - Ningún secreto quedó commiteado; `.env.local` sigue ignorado por git.
 
 **Fuera de alcance de la Fase 0** (viene después): flujo de reserva, recordatorios, fallback con reintentos, no-show, panel admin.
+
+**Pulido posterior al cierre**: el webhook respondía 200 antes de terminar el trabajo (Vercel podía "congelar" la función antes de que el guardado terminara); la app nunca había quedado efectivamente suscrita al WABA (`subscribed_apps` solo tenía la app interna de prueba de Meta); el mensaje saliente del bot no se registraba en `message_logs`. Los tres quedaron corregidos, con pruebas automáticas.
+
+**Pendiente conocido para la Fase 3 (no-show)**: los avisos de estado de WhatsApp (`sent` → `delivered` → `read`) comparten el mismo `wamid` para un mismo mensaje. Como `webhook_events.meta_event_id` es único, solo el primer aviso de cada mensaje se guarda — los siguientes se descartan correctamente por el dedupe de idempotencia (no es un bug, pero sí una pérdida de información: hoy no se puede saber si un mensaje llegó a entregarse o a leerse, solo que se intentó enviar). La Fase 3 va a necesitar una clave de idempotencia distinta para los eventos de `status` (por ejemplo, combinar el `wamid` con el valor del estado) si se quiere trackear la progresión completa sent → delivered → read.
 
 ## Notas
 
