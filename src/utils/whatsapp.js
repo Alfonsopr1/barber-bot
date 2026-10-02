@@ -39,7 +39,10 @@ async function callWhatsAppApi(phoneNumberId, body) {
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(`WhatsApp API error: ${JSON.stringify(data)}`);
+    const error = new Error(data.error ? data.error.message : 'WhatsApp API error');
+    error.httpStatus = response.status;
+    error.metaErrorCode = data.error ? data.error.code : undefined;
+    throw error;
   }
 
   return data;

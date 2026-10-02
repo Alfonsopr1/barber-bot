@@ -28,14 +28,16 @@ async function receiveWebhook(req, res) {
     return res.sendStatus(401);
   }
 
-  // Ack fast: Meta retries the whole payload if it doesn't see a quick 200.
-  res.sendStatus(200);
-
+  // Finish the work before acking: on Vercel the function can be frozen
+  // right after the response is sent, so anything scheduled to run after
+  // res.sendStatus(200) is not guaranteed to actually execute.
   try {
     await processWebhookBody(req.body);
   } catch (err) {
     console.error('Error processing webhook event', err);
   }
+
+  res.sendStatus(200);
 }
 
 async function processWebhookBody(body) {
@@ -58,12 +60,13 @@ async function processWebhookBody(body) {
 }
 
 async function handleIncomingMessage(phoneNumberId, message) {
-  const isNew = await recordWebhookEvent(message.id, 'message', message);
-  if (!isNew) return;
+  const shouldProcess = await claimWebhookEvent(message.id, 'message', message);
+  if (!shouldProcess) return;
 
   const shop = await findShopByPhoneNumberId(phoneNumberId);
   if (!shop) {
     console.error(`No shop found for phone_number_id ${phoneNumberId}`);
+    await markWebhookEventProcessed(message.id);
     return;
   }
 
@@ -76,33 +79,66 @@ async function handleIncomingMessage(phoneNumberId, message) {
     meta_message_id: message.id,
   });
 
-  await sendTextMessage(phoneNumberId, message.from, messages.GENERIC_WELCOME);
+  try {
+    await sendTextMessage(phoneNumberId, message.from, messages.GENERIC_WELCOME);
+  } catch (err) {
+    console.error('Error sending WhatsApp reply', {
+      shopId: shop.id,
+      httpStatus: err.httpStatus,
+      metaErrorCode: err.metaErrorCode,
+      errorMessage: err.message,
+    });
+  }
+
+  await markWebhookEventProcessed(message.id);
 }
 
 async function handleStatusUpdate(status) {
-  const isNew = await recordWebhookEvent(status.id, 'status', status);
-  if (!isNew) return;
+  const shouldProcess = await claimWebhookEvent(status.id, 'status', status);
+  if (!shouldProcess) return;
 
   await supabase.from('message_logs').update({ status: status.status }).eq('meta_message_id', status.id);
+
+  await markWebhookEventProcessed(status.id);
 }
 
-// Returns false if this event was already processed (Meta redelivered it).
-async function recordWebhookEvent(metaEventId, eventType, payload) {
+// Claims an event for processing. Returns false only if a previous attempt
+// already finished it (so a Meta redelivery never triggers a second reply).
+// If a previous attempt inserted the row but crashed before calling
+// markWebhookEventProcessed, this returns true so it gets retried instead
+// of being silently dropped.
+async function claimWebhookEvent(metaEventId, eventType, payload) {
   if (!metaEventId) return true;
 
   const { error } = await supabase.from('webhook_events').insert({
     meta_event_id: metaEventId,
     event_type: eventType,
     payload,
-    processed_at: new Date().toISOString(),
   });
 
-  if (error) {
-    if (error.code === UNIQUE_VIOLATION) return false;
-    throw error;
-  }
+  if (!error) return true;
+  if (error.code !== UNIQUE_VIOLATION) throw error;
 
-  return true;
+  const { data, error: selectError } = await supabase
+    .from('webhook_events')
+    .select('processed_at')
+    .eq('meta_event_id', metaEventId)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+
+  return !data || !data.processed_at;
+}
+
+async function markWebhookEventProcessed(metaEventId) {
+  if (!metaEventId) return;
+
+  const { error } = await supabase
+    .from('webhook_events')
+    .update({ processed_at: new Date().toISOString() })
+    .eq('meta_event_id', metaEventId);
+
+  if (error) throw error;
 }
 
 async function findShopByPhoneNumberId(phoneNumberId) {
@@ -117,4 +153,4 @@ async function findShopByPhoneNumberId(phoneNumberId) {
   return data;
 }
 
-module.exports = { verifyWebhook, receiveWebhook };
+module.exports = { verifyWebhook, receiveWebhook, handleIncomingMessage };
