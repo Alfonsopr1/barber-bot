@@ -5,9 +5,11 @@
 // Usage:
 //   node scripts/diagnose.js <production-url> <waba-id>
 //
-// <production-url> is needed for checks 4 and 5 (they call your real
-// production webhook). <waba-id> is needed for check 6 (Meta's WhatsApp
-// Business Account id, from Meta for Developers).
+// <production-url> is needed for checks 4, 5 and 7 (they call your real
+// production webhook, or compare against it). <waba-id> is needed for
+// check 6 (Meta's WhatsApp Business Account id, from Meta for Developers).
+// Check 7 reads the app's own webhook subscription (callback_url + fields)
+// using the app id from check 3's debug_token response.
 //
 // Heads up: check 5 sends a signed test event to your real production
 // webhook. If the signature passes, it inserts one throwaway row into
@@ -103,7 +105,13 @@ async function checkWhatsAppToken() {
   }
 
   const info = data.data || {};
-  return { ok: Boolean(info.is_valid), httpStatus: res.status, isValid: info.is_valid, expiresAt: info.expires_at };
+  return {
+    ok: Boolean(info.is_valid),
+    httpStatus: res.status,
+    isValid: info.is_valid,
+    expiresAt: info.expires_at,
+    appId: info.app_id,
+  };
 }
 
 async function checkWebhookVerification(productionUrl) {
@@ -203,6 +211,54 @@ async function checkSubscribedApps(wabaId) {
   return { ok: apps.length > 0, httpStatus: res.status, subscribedAppsCount: apps.length };
 }
 
+// What the app itself has registered as its webhook: callback_url + fields per
+// object type (e.g. whatsapp_business_account). Needs an app access token
+// (app_id|app_secret), not the system user token used by the other checks.
+async function checkAppSubscriptions(appId, productionUrl) {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  if (!appSecret) return { ok: false, reason: 'WHATSAPP_APP_SECRET no está definida' };
+  if (!appId) return { ok: false, reason: 'no se pudo determinar el app id (revisa el chequeo 3)' };
+
+  const appAccessToken = `${appId}|${appSecret}`;
+  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${encodeURIComponent(appId)}/subscriptions?access_token=${encodeURIComponent(appAccessToken)}`;
+
+  let res;
+  let data;
+  try {
+    res = await fetch(url);
+    data = await res.json();
+  } catch {
+    return { ok: false, reason: 'no se pudo conectar a la Graph API de Meta' };
+  }
+
+  if (data.error) {
+    return { ok: false, httpStatus: res.status, metaError: data.error.message, metaErrorCode: data.error.code };
+  }
+
+  const subscriptions = (data.data || []).map((s) => ({
+    object: s.object,
+    callbackUrl: s.callback_url,
+    active: s.active,
+    fields: (s.fields || []).map((f) => (typeof f === 'string' ? f : f.name)),
+  }));
+
+  const wabaSubscription = subscriptions.find((s) => s.object === 'whatsapp_business_account');
+  const expectedCallbackUrl = productionUrl ? new URL('/webhook', productionUrl).toString() : undefined;
+  const callbackUrlMatchesProduction = Boolean(
+    wabaSubscription && expectedCallbackUrl && wabaSubscription.callbackUrl === expectedCallbackUrl
+  );
+  const subscribedToMessages = Boolean(wabaSubscription && wabaSubscription.fields.includes('messages'));
+
+  return {
+    ok: callbackUrlMatchesProduction && subscribedToMessages,
+    httpStatus: res.status,
+    subscriptions,
+    expectedCallbackUrl,
+    callbackUrlMatchesProduction,
+    subscribedToMessages,
+  };
+}
+
 function printCheck(title, result) {
   const status = result.ok ? 'OK' : 'FALLO';
   console.log(`\n${title}: ${status}`);
@@ -223,9 +279,14 @@ async function main() {
   }
 
   printCheck('=== 2) Conexión a Supabase ===', await checkSupabase());
-  printCheck('=== 3) Token de WhatsApp (debug_token) ===', await checkWhatsAppToken());
+  const tokenCheck = await checkWhatsAppToken();
+  printCheck('=== 3) Token de WhatsApp (debug_token) ===', tokenCheck);
   printCheck('=== 4) Verificación del webhook (GET) ===', await checkWebhookVerification(productionUrl));
   printCheck('=== 5) Firma del webhook (POST firmado) ===', await checkWebhookSignature(productionUrl));
+  printCheck(
+    '=== 7) Suscripción registrada por la app (callback_url y campos) ===',
+    await checkAppSubscriptions(tokenCheck.appId, productionUrl)
+  );
   printCheck('=== 6) Suscripción de la app al WABA ===', await checkSubscribedApps(wabaId));
 
   console.log('\nListo. Ningún valor secreto fue impreso por este script.');
