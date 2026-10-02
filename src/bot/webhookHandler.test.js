@@ -7,6 +7,9 @@ test('handleIncomingMessage logs Meta error details but never the client phone o
     from() {
       return {
         insert: async () => ({ error: null }),
+        update() {
+          return { eq: async () => ({ error: null }) };
+        },
         select() {
           return this;
         },
