@@ -15,5 +15,8 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
     "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "dotenv": "^16.6.1"
   }
 }
