@@ -48,6 +48,8 @@ async function processWebhookBody(body) {
       const value = change.value || {};
       const phoneNumberId = value.metadata && value.metadata.phone_number_id;
 
+      await logIncomingEvent(phoneNumberId, value);
+
       for (const message of value.messages || []) {
         await handleIncomingMessage(phoneNumberId, message);
       }
@@ -57,6 +59,31 @@ async function processWebhookBody(body) {
       }
     }
   }
+}
+
+// One line per webhook POST so a real event's shape is visible in the logs
+// even when nothing else fires. Never logs phone numbers, message text or
+// names — only the event type, how many items it had, and whether the
+// phone_number_id matches a configured shop.
+async function logIncomingEvent(phoneNumberId, value) {
+  let eventType = 'other';
+  let itemCount = 0;
+
+  if (Array.isArray(value.messages)) {
+    eventType = 'messages';
+    itemCount = value.messages.length;
+  } else if (Array.isArray(value.statuses)) {
+    eventType = 'statuses';
+    itemCount = value.statuses.length;
+  }
+
+  const shop = await findShopByPhoneNumberId(phoneNumberId);
+
+  console.log('Webhook event received', {
+    eventType,
+    itemCount,
+    matchesShop: Boolean(shop),
+  });
 }
 
 async function handleIncomingMessage(phoneNumberId, message) {
