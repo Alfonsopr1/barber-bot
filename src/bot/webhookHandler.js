@@ -107,7 +107,24 @@ async function handleIncomingMessage(phoneNumberId, message) {
   });
 
   try {
-    await sendTextMessage(phoneNumberId, message.from, messages.GENERIC_WELCOME);
+    const sendResult = await sendTextMessage(phoneNumberId, message.from, messages.GENERIC_WELCOME);
+    const outboundMessageId = sendResult && sendResult.messages && sendResult.messages[0] && sendResult.messages[0].id;
+
+    const { error: outboundLogError } = await supabase.from('message_logs').insert({
+      shop_id: shop.id,
+      client_phone: message.from,
+      direction: 'outbound',
+      message_type: 'text',
+      content: { body: messages.GENERIC_WELCOME },
+      meta_message_id: outboundMessageId,
+    });
+
+    if (outboundLogError) {
+      console.error('Error logging outbound WhatsApp message', {
+        shopId: shop.id,
+        errorMessage: outboundLogError.message,
+      });
+    }
   } catch (err) {
     console.error('Error sending WhatsApp reply', {
       shopId: shop.id,
